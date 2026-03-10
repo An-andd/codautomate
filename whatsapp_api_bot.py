@@ -61,6 +61,7 @@ OUTPUT = "generated_labels.docx"
 PROCESSED_FILE = "processed_orders_api.json"
 BATCH_COUNTER_FILE = "batch_counter.txt"
 STATE_FILE = "bot_state.json"
+ORDERS_FILE = "collected_orders.json"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.environ.get("TEMPLATE_PATH", os.path.join(BASE_DIR, TEMPLATE))
@@ -102,6 +103,28 @@ def save_processed(processed):
 def order_hash(data):
     key = f"{data['name']}|{data['phone']}|{data['pincode']}|{data['price']}|{data['item']}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def load_orders():
+    path = os.path.join(BASE_DIR, ORDERS_FILE)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+def save_orders(orders):
+    path = os.path.join(BASE_DIR, ORDERS_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(orders, f, ensure_ascii=False)
+
+
+def regenerate_docx(orders):
+    """Rebuild the output DOCX from the current orders list."""
+    if os.path.exists(OUTPUT_PATH):
+        os.remove(OUTPUT_PATH)
+    for data in orders:
+        add_label(data)
 
 
 def get_next_batch_number():
@@ -402,8 +425,9 @@ def stop_and_export():
     if pdf_path and os.path.exists(pdf_path):
         os.rename(pdf_path, cod_pdf)
         final_pdf = cod_pdf
-    if os.path.exists(PROCESSED_FILE):
-        os.remove(PROCESSED_FILE)
+    for f in [PROCESSED_FILE, os.path.join(BASE_DIR, ORDERS_FILE)]:
+        if os.path.exists(f):
+            os.remove(f)
     return final_pdf, cod_docx
 
 
@@ -518,10 +542,11 @@ def handle_message(sender, text):
         state["batch_count"] = 0
         # Clear previous batch data
         save_processed(set())
+        save_orders([])
         if os.path.exists(OUTPUT_PATH):
             os.remove(OUTPUT_PATH)
         save_state(state)
-        send_message(sender, "Started collecting orders.\nPaste order details now.\nSend 'stop' when done to get the PDF.")
+        send_message(sender, "Started collecting orders.\nPaste order details now.\nSend 'stop' when done to get the PDF.\n\nCommands:\n  list — view all orders\n  delete <n> — remove order #n\n  stop — export PDF")
         print("  STARTED collecting")
         return
 
@@ -563,6 +588,44 @@ def handle_message(sender, text):
         print(f"  STOPPED — {count} labels exported")
         return
 
+    # --- LIST command ---
+    if lower == "list":
+        if not state.get("collecting"):
+            send_message(sender, "Not currently collecting. Send 'start' first.")
+            return
+        orders = load_orders()
+        if not orders:
+            send_message(sender, "No orders collected yet.")
+            return
+        lines = [f"Orders collected: {len(orders)}\n"]
+        for i, o in enumerate(orders, 1):
+            lines.append(f"{i}. {o['name']} — {o['phone']} — ₹{o['price']} — {o['item']}")
+        lines.append("\nSend 'delete <n>' to remove an order.")
+        send_message(sender, "\n".join(lines))
+        return
+
+    # --- DELETE command ---
+    delete_m = re.match(r"delete\s+(\d+)", lower)
+    if delete_m:
+        if not state.get("collecting"):
+            send_message(sender, "Not currently collecting. Send 'start' first.")
+            return
+        idx = int(delete_m.group(1))
+        orders = load_orders()
+        if idx < 1 or idx > len(orders):
+            send_message(sender, f"Invalid order number. You have {len(orders)} order(s). Send 'list' to see them.")
+            return
+        removed = orders.pop(idx - 1)
+        save_orders(orders)
+        # Rebuild processed hashes and DOCX
+        save_processed({order_hash(o) for o in orders})
+        regenerate_docx(orders)
+        state["batch_count"] = len(orders)
+        save_state(state)
+        send_message(sender, f"Deleted order #{idx}: {removed['name']} — ₹{removed['price']}\n{len(orders)} order(s) remaining.")
+        print(f"  DELETED order #{idx}: {removed['name']}")
+        return
+
     # --- STATUS command ---
     if lower == "status":
         collecting = state.get("collecting", False)
@@ -585,6 +648,8 @@ def handle_message(sender, text):
     order_blocks = split_orders(text)
     added = 0
 
+    orders = load_orders()
+
     for block in order_blocks:
         try:
             data = parse_order(block)
@@ -593,12 +658,14 @@ def handle_message(sender, text):
                 continue
             add_label(data)
             processed.add(h)
+            orders.append(data)
             state["batch_count"] = state.get("batch_count", 0) + 1
             added += 1
             print(f"  + Label for: {data['name']} (₹{data['price']})")
         except ValueError as e:
             send_message(sender, f"Could not parse order: {e}")
 
+    save_orders(orders)
     save_processed(processed)
     save_state(state)
 
