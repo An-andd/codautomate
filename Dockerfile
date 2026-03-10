@@ -5,11 +5,17 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# LibreOffice is used for DOCX -> PDF conversion on Linux.
+# LibreOffice + Microsoft-compatible fonts for accurate DOCX → PDF conversion.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \
     fonts-dejavu \
+    fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
+    fonts-freefont-ttf \
+    fontconfig \
+    && fc-cache -f -v \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
