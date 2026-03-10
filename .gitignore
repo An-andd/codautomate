@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+whatsapp_profile/
+generated_labels.docx
+generated_labels.pdf
+cod*.docx
+cod*.pdf
+bot_state.json
+processed_orders_api.json
+batch_counter.txt
+*.pma
+ngrok.exe

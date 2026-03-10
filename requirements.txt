@@ -1,0 +1,5 @@
+flask
+requests
+python-docx
+num2words
+gunicorn
