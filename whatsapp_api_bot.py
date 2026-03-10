@@ -62,6 +62,10 @@ PROCESSED_FILE = "processed_orders_api.json"
 BATCH_COUNTER_FILE = "batch_counter.txt"
 STATE_FILE = "bot_state.json"
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_PATH = os.environ.get("TEMPLATE_PATH", os.path.join(BASE_DIR, TEMPLATE))
+OUTPUT_PATH = os.path.join(BASE_DIR, OUTPUT)
+
 # ============== APP ==============
 
 app = Flask(__name__)
@@ -350,16 +354,16 @@ def remove_empty_body_paragraphs(doc):
 
 
 def add_label(data):
-    template_doc = Document(TEMPLATE)
+    template_doc = Document(TEMPLATE_PATH)
     template_table = template_doc.tables[0]
 
-    if os.path.exists(OUTPUT):
-        doc = Document(OUTPUT)
+    if os.path.exists(OUTPUT_PATH):
+        doc = Document(OUTPUT_PATH)
     else:
-        doc = Document(TEMPLATE)
+        doc = Document(TEMPLATE_PATH)
         remove_empty_body_paragraphs(doc)
         fill_table(doc.tables[0], data)
-        doc.save(OUTPUT)
+        doc.save(OUTPUT_PATH)
         return
 
     tables_count = len(doc.tables)
@@ -382,25 +386,25 @@ def add_label(data):
     new_table = deepcopy(template_table._element)
     gap.addnext(new_table)
     fill_table(doc.tables[-1], data)
-    doc.save(OUTPUT)
+    doc.save(OUTPUT_PATH)
 
 
 def stop_and_export():
     """Returns (pdf_path_or_None, docx_path)."""
-    if not os.path.exists(OUTPUT):
+    if not os.path.exists(OUTPUT_PATH):
         return None, None
     batch_num = get_next_batch_number()
-    cod_docx = f"cod{batch_num}.docx"
-    cod_pdf = f"cod{batch_num}.pdf"
-    pdf_path = convert_to_pdf(OUTPUT)
-    os.rename(OUTPUT, cod_docx)
+    cod_docx = os.path.join(BASE_DIR, f"cod{batch_num}.docx")
+    cod_pdf = os.path.join(BASE_DIR, f"cod{batch_num}.pdf")
+    pdf_path = convert_to_pdf(OUTPUT_PATH)
+    os.rename(OUTPUT_PATH, cod_docx)
     final_pdf = None
     if pdf_path and os.path.exists(pdf_path):
         os.rename(pdf_path, cod_pdf)
-        final_pdf = os.path.abspath(cod_pdf)
+        final_pdf = cod_pdf
     if os.path.exists(PROCESSED_FILE):
         os.remove(PROCESSED_FILE)
-    return final_pdf, os.path.abspath(cod_docx)
+    return final_pdf, cod_docx
 
 
 def convert_to_pdf(docx_path):
@@ -484,7 +488,12 @@ def webhook():
             continue
 
         print(f"\n[MSG from {sender}]: {text[:100]}")
-        handle_message(sender, text)
+        try:
+            handle_message(sender, text)
+        except Exception as e:
+            # Keep webhook healthy even if one message causes an error.
+            print(f"  Error handling message: {e}")
+            send_message(sender, f"Internal error while processing your message: {str(e)[:500]}")
 
     return "OK", 200
 
@@ -495,14 +504,22 @@ def handle_message(sender, text):
     processed = load_processed()
     lower = text.strip().lower()
 
+    if not os.path.exists(TEMPLATE_PATH):
+        send_message(
+            sender,
+            "Template file missing on server: cod_template.docx. "
+            "Please deploy this file to Render and redeploy."
+        )
+        return
+
     # --- START command ---
     if lower == "start":
         state["collecting"] = True
         state["batch_count"] = 0
         # Clear previous batch data
         save_processed(set())
-        if os.path.exists(OUTPUT):
-            os.remove(OUTPUT)
+        if os.path.exists(OUTPUT_PATH):
+            os.remove(OUTPUT_PATH)
         save_state(state)
         send_message(sender, "Started collecting orders.\nPaste order details now.\nSend 'stop' when done to get the PDF.")
         print("  STARTED collecting")
