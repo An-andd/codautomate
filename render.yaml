@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: cod-label-bot
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: VERIFY_TOKEN
+        value: cod_bot_verify
+      - key: APP_SECRET
+        sync: false
