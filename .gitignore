@@ -4,6 +4,7 @@ whatsapp_profile/
 generated_labels.docx
 generated_labels.pdf
 cod*.docx
+!cod_template.docx
 cod*.pdf
 bot_state.json
 processed_orders_api.json
