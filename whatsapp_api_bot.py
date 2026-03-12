@@ -23,10 +23,12 @@ FREE TUNNEL (for testing without a server):
 
 import re
 import os
+import sys
 import json
 import hashlib
 import hmac
 import time
+import logging
 import subprocess
 import threading
 import collections
@@ -78,7 +80,22 @@ ORDERS_PATH = os.path.join(DATA_DIR, ORDERS_FILE)
 
 # ============== APP ==============
 
+# --- Logging setup (visible in Render logs) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
+
+
+@app.route("/", methods=["GET"])
+def health():
+    """Health-check endpoint so Render knows the service is alive."""
+    return jsonify({"status": "ok", "service": "cod-label-bot"}), 200
+
 
 DELIM = r"[,:;.\s]"
 
@@ -91,6 +108,15 @@ _MAX_MSG_CACHE = 500
 # Maximum age (seconds) of a message we'll still process.
 # Default 0 disables age-based dropping to avoid losing delayed but valid messages.
 MAX_MESSAGE_AGE = int(os.environ.get("MAX_MESSAGE_AGE", "0"))
+
+logger.info("=== COD Label Bot starting ===")
+logger.info("WHATSAPP_TOKEN set: %s", bool(WHATSAPP_TOKEN))
+logger.info("PHONE_NUMBER_ID set: %s", bool(PHONE_NUMBER_ID))
+logger.info("APP_SECRET set: %s", bool(APP_SECRET))
+logger.info("VERIFY_TOKEN: %s", VERIFY_TOKEN)
+logger.info("TEMPLATE_PATH: %s (exists: %s)", TEMPLATE_PATH, os.path.exists(TEMPLATE_PATH))
+logger.info("DATA_DIR: %s", DATA_DIR)
+logger.info("=== Ready to receive webhooks ===")
 
 
 # ---------------- STATE ----------------
@@ -484,10 +510,12 @@ def verify():
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
+    logger.info("Webhook verify: mode=%s token_match=%s", mode, token == VERIFY_TOKEN)
 
     if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("Webhook verified.")
+        logger.info("Webhook verified successfully.")
         return challenge, 200
+    logger.warning("Webhook verification FAILED (token mismatch or wrong mode)")
     return "Forbidden", 403
 
 
@@ -512,6 +540,8 @@ def webhook():
     """Receive incoming WhatsApp messages.
     Returns 200 immediately, processes messages in a background thread
     so Meta doesn't time out and retry."""
+    logger.info("Webhook POST received (%d bytes)", len(request.data or b""))
+
     # Verify signature if APP_SECRET is set
     if APP_SECRET:
         signature = request.headers.get("X-Hub-Signature-256", "")
@@ -519,11 +549,13 @@ def webhook():
             APP_SECRET.encode(), request.data, hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(signature, expected):
+            logger.warning("Invalid signature — rejecting request")
             return "Invalid signature", 403
 
     body = request.get_json()
 
     if not body:
+        logger.info("Empty body — ignoring")
         return "OK", 200
 
     # Extract messages
@@ -791,7 +823,6 @@ if __name__ == "__main__":
         print("See setup instructions at the top of this file.")
         sys.exit(1)
 
-    import sys
     print("=" * 55)
     print("  WhatsApp Cloud API Bot — COD Label Generator")
     print("=" * 55)
