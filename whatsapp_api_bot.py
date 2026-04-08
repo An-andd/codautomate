@@ -61,9 +61,9 @@ SEND_PROGRESS_REPLY = False  # False = don't send "Added X label(s)" after every
 # Biller options for COD template placeholder {{BILLER_ID}}
 # Choose one option at the start of each batch. Same biller is used until stop.
 BILLER_OPTIONS = {
-    "1": "1624036027",  # alternative 1
-    "2": "1264602129",  # alternative 2
-    "3": "1260357626",  # default
+    "1": "1260357626",  # default
+    "2": "1264602129",  # alternative 1
+    "3": "1624036027",  # alternative 2
 }
 
 
@@ -708,6 +708,68 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
         print("  STARTED collecting")
         return
 
+    # --- STOP command ---
+    if lower == "stop":
+        # Ignore delayed/replayed STOP older than the current collecting session.
+        started_at = int(state.get("collecting_started_at", 0) or 0)
+        if started_at and msg_ts and msg_ts < started_at:
+            print(f"  [SKIP] Ignored stale STOP from {sender}")
+            return
+
+        # Only the sender who started the batch can stop it.
+        collecting_sender = state.get("collecting_sender")
+        if state.get("collecting") and collecting_sender and sender != collecting_sender:
+            send_message(sender, "Only the number that sent 'start' can send 'stop' for this batch.")
+            return
+
+        if not state.get("collecting"):
+            # If we're still waiting for biller choice, let stop act as cancel.
+            if state.get("awaiting_biller_choice"):
+                state["awaiting_biller_choice"] = False
+                state["collecting_sender"] = ""
+                state["collecting_started_at"] = 0
+                state["collecting_biller_id"] = ""
+                save_state(state)
+                send_message(sender, "Biller selection cancelled. Send 'start' to begin again.")
+                return
+
+            send_message(sender, "Not currently collecting. Send 'start' first.")
+            return
+
+        count = state.get("batch_count", 0)
+        state["collecting"] = False
+        state["batch_count"] = 0
+        state["collecting_biller_id"] = ""
+        state["awaiting_biller_choice"] = False
+        save_state(state)
+
+        if count == 0:
+            send_message(sender, "No orders were collected. Nothing to export.")
+            return
+
+        send_message(sender, f"Stopped. {count} label(s) collected.\nGenerating PDF...")
+
+        pdf_path, docx_path = stop_and_export()
+        if pdf_path:
+            batch_num = int(open(BATCH_COUNTER_PATH).read().strip())
+            success, send_err = send_document(sender, pdf_path, caption=f"COD Labels — Batch {batch_num}")
+            if success:
+                send_message(sender, f"PDF sent! (cod{batch_num}.pdf)\nSend 'start' for the next batch.")
+            else:
+                send_message(sender, f"PDF saved locally but could not send.\nReason: {send_err[:700]}")
+        elif docx_path:
+            batch_num = int(open(BATCH_COUNTER_PATH).read().strip())
+            success, send_err = send_document(sender, docx_path, caption=f"COD Labels — Batch {batch_num}")
+            if success:
+                send_message(sender, f"DOCX file sent! (cod{batch_num}.docx)\nInstall MS Word or LibreOffice for PDF.\nSend 'start' for the next batch.")
+            else:
+                send_message(sender, f"Could not send file.\nReason: {send_err[:700]}")
+        else:
+            send_message(sender, "No labels found to export.")
+
+        print(f"  STOPPED — {count} labels exported")
+        return
+
     # --- Biller choice continuation after plain 'start' ---
     if state.get("awaiting_biller_choice"):
         owner = state.get("collecting_sender")
@@ -753,58 +815,6 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
         state["collecting_biller_id"] = new_biller_id
         save_state(state)
         send_message(sender, f"Biller ID updated for this batch: {new_biller_id}")
-        return
-
-    # --- STOP command ---
-    if lower == "stop":
-        # Ignore delayed/replayed STOP older than the current collecting session.
-        started_at = int(state.get("collecting_started_at", 0) or 0)
-        if started_at and msg_ts and msg_ts < started_at:
-            print(f"  [SKIP] Ignored stale STOP from {sender}")
-            return
-
-        # Only the sender who started the batch can stop it.
-        collecting_sender = state.get("collecting_sender")
-        if state.get("collecting") and collecting_sender and sender != collecting_sender:
-            send_message(sender, "Only the number that sent 'start' can send 'stop' for this batch.")
-            return
-
-        if not state.get("collecting"):
-            send_message(sender, "Not currently collecting. Send 'start' first.")
-            return
-
-        count = state.get("batch_count", 0)
-        state["collecting"] = False
-        state["batch_count"] = 0
-        state["collecting_biller_id"] = ""
-        state["awaiting_biller_choice"] = False
-        save_state(state)
-
-        if count == 0:
-            send_message(sender, "No orders were collected. Nothing to export.")
-            return
-
-        send_message(sender, f"Stopped. {count} label(s) collected.\nGenerating PDF...")
-
-        pdf_path, docx_path = stop_and_export()
-        if pdf_path:
-            batch_num = int(open(BATCH_COUNTER_PATH).read().strip())
-            success, send_err = send_document(sender, pdf_path, caption=f"COD Labels — Batch {batch_num}")
-            if success:
-                send_message(sender, f"PDF sent! (cod{batch_num}.pdf)\nSend 'start' for the next batch.")
-            else:
-                send_message(sender, f"PDF saved locally but could not send.\nReason: {send_err[:700]}")
-        elif docx_path:
-            batch_num = int(open(BATCH_COUNTER_PATH).read().strip())
-            success, send_err = send_document(sender, docx_path, caption=f"COD Labels — Batch {batch_num}")
-            if success:
-                send_message(sender, f"DOCX file sent! (cod{batch_num}.docx)\nInstall MS Word or LibreOffice for PDF.\nSend 'start' for the next batch.")
-            else:
-                send_message(sender, f"Could not send file.\nReason: {send_err[:700]}")
-        else:
-            send_message(sender, "No labels found to export.")
-
-        print(f"  STOPPED — {count} labels exported")
         return
 
     # --- LIST command ---

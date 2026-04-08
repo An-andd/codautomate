@@ -11,3 +11,8 @@ processed_orders_api.json
 batch_counter.txt
 *.pma
 ngrok.exe
+chromedriver.exe
+
+# Local helper scripts (not used by cloud webhook bot)
+generate_label.py
+whatsapp_label_bot.py
