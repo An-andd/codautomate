@@ -8,6 +8,7 @@ A WhatsApp bot that generates COD (Cash on Delivery) shipping labels from order 
 2. Paste order details (Name, Address, Phone, Pincode, State, Item, Price)
 3. Send **stop** to generate and receive the label file (PDF or DOCX)
 4. Send **status** to check how many labels are in the current batch
+5. Biller ID is auto-selected per sender number (or can be overridden per batch)
 
 The bot parses order messages, fills a DOCX template with label data (2 labels per page), converts to PDF if possible, and sends the file back to you on WhatsApp.
 
@@ -16,6 +17,7 @@ The bot parses order messages, fills a DOCX template with label data (2 labels p
 - Python 3.8+
 - WhatsApp Business API account ([Meta Developers](https://developers.facebook.com))
 - `cod_template.docx` — the label template with placeholders
+   - Include `{{BILLER_ID}}` in the template where biller ID should appear
 
 ## Setup
 
@@ -46,6 +48,21 @@ python whatsapp_api_bot.py
 ```
 
 The server starts on port 5000 (or the `PORT` env var).
+
+### 3.1 Biller ID routing (important)
+
+You can avoid manual template editing by routing biller IDs automatically:
+
+- Per sender number via `BILLER_ID_BY_SENDER_JSON` (recommended)
+- Fallback via `BILLER_ID_DEFAULT`
+- Per-batch override using `start <biller_id>` or `biller <biller_id>`
+
+Example:
+
+```bash
+set BILLER_ID_DEFAULT=BILLER_MAIN
+set BILLER_ID_BY_SENDER_JSON={"919876543210":"BILLER_A","919999888777":"BILLER_B"}
+```
 
 ### 4. Set up webhook
 
@@ -108,4 +125,6 @@ Phone: 9876543210
 | `PHONE_NUMBER_ID` | Yes | WhatsApp phone number ID |
 | `VERIFY_TOKEN` | No | Webhook verification token (default: `cod_bot_verify`) |
 | `APP_SECRET` | No | App secret for request signature verification |
+| `BILLER_ID_DEFAULT` | No | Fallback biller ID when sender is not mapped |
+| `BILLER_ID_BY_SENDER_JSON` | No | JSON map of sender number to biller ID |
 | `PORT` | No | Server port (default: `5000`, set automatically on Render) |

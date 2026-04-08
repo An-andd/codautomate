@@ -58,6 +58,40 @@ APP_SECRET = os.environ.get("APP_SECRET", "")                  # Optional: App s
 ALLOWED_NUMBERS = []         # e.g. ["919342901848"] — leave empty to allow all
 SEND_PROGRESS_REPLY = False  # False = don't send "Added X label(s)" after every order message
 
+# Biller options for COD template placeholder {{BILLER_ID}}
+# Choose one option at the start of each batch. Same biller is used until stop.
+BILLER_OPTIONS = {
+    "1": "1624036027",  # alternative 1
+    "2": "1264602129",  # alternative 2
+    "3": "1260357626",  # default
+}
+
+
+def biller_options_text():
+    return (
+        "Choose biller option:\n"
+        f"1 - {BILLER_OPTIONS['1']} (default)\n"
+        f"2 - {BILLER_OPTIONS['2']} (alternative 1)\n"
+        f"3 - {BILLER_OPTIONS['3']} (alternative 2)\n\n"
+        "Send: 1 or 2 or 3"
+    )
+
+
+def resolve_biller_choice(choice_text):
+    """Accept option number (1/2/3) or one of the configured biller IDs."""
+    choice = (choice_text or "").strip()
+    if choice in BILLER_OPTIONS:
+        return BILLER_OPTIONS[choice]
+
+    opt_m = re.match(r"^(?:option\s*)?([123])$", choice, re.I)
+    if opt_m:
+        return BILLER_OPTIONS[opt_m.group(1)]
+
+    if choice in BILLER_OPTIONS.values():
+        return choice
+
+    return ""
+
 # ============== FILE CONFIG ==============
 
 TEMPLATE = "cod_template.docx"
@@ -146,7 +180,7 @@ def save_processed(processed):
 
 
 def order_hash(data):
-    key = f"{data['name']}|{data['phone']}|{data['pincode']}|{data['price']}|{data['item']}"
+    key = f"{data['name']}|{data['phone']}|{data['pincode']}|{data['price']}|{data['item']}|{data.get('biller_id', '')}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -373,6 +407,7 @@ def fill_table(table, data):
         "{{STATE}}": data["state"], "{{PINCODE}}": data["pincode"],
         "{{PHONE}}": data["phone"], "{{PRICE}}": str(data["price"]),
         "{{PRICE_WORDS}}": price_words, "{{ITEM}}": data["item"],
+        "{{BILLER_ID}}": data.get("biller_id", ""),
     }
     for row in table.rows:
         for cell in row.cells:
@@ -622,7 +657,8 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
     """Process a single incoming message."""
     state = load_state()
     processed = load_processed()
-    lower = text.strip().lower()
+    stripped_text = text.strip()
+    lower = stripped_text.lower()
     if msg_ts is None:
         msg_ts = int(time.time())
 
@@ -635,19 +671,88 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
         return
 
     # --- START command ---
-    if lower == "start":
+    start_m = re.match(r"^start(?:\s+(.+))?$", stripped_text, re.I)
+    if start_m:
+        choice_text = (start_m.group(1) or "").strip()
+
+        # If no option is provided, ask user to choose 1/2/3.
+        if not choice_text:
+            state["collecting"] = False
+            state["batch_count"] = 0
+            state["collecting_started_at"] = msg_ts
+            state["collecting_sender"] = sender
+            state["collecting_biller_id"] = ""
+            state["awaiting_biller_choice"] = True
+            save_state(state)
+            send_message(sender, "Started new batch setup.\n" + biller_options_text())
+            return
+
+        active_biller_id = resolve_biller_choice(choice_text)
+        if not active_biller_id:
+            send_message(sender, "Invalid biller option.\n" + biller_options_text())
+            return
+
         state["collecting"] = True
         state["batch_count"] = 0
         state["collecting_started_at"] = msg_ts
         state["collecting_sender"] = sender
+        state["collecting_biller_id"] = active_biller_id
+        state["awaiting_biller_choice"] = False
         # Clear previous batch data
         save_processed(set())
         save_orders([])
         if os.path.exists(OUTPUT_PATH):
             os.remove(OUTPUT_PATH)
         save_state(state)
-        send_message(sender, "Started collecting orders.\nPaste order details now.\nSend 'stop' when done to get the PDF.\n\nCommands:\n  list — view all orders\n  delete <n> — remove order #n\n  stop — export PDF")
+        send_message(sender, f"Started collecting orders.\nBiller ID for this batch: {active_biller_id}\n\nPaste order details now.\nSend 'stop' when done to get the PDF.\n\nCommands:\n  list — view all orders\n  delete <n> — remove order #n\n  biller <1|2|3> — change biller for this batch\n  stop — export PDF")
         print("  STARTED collecting")
+        return
+
+    # --- Biller choice continuation after plain 'start' ---
+    if state.get("awaiting_biller_choice"):
+        owner = state.get("collecting_sender")
+        if owner and sender != owner:
+            send_message(sender, "Another number is selecting biller for this batch.")
+            return
+
+        active_biller_id = resolve_biller_choice(stripped_text)
+        if not active_biller_id:
+            send_message(sender, "Please choose a valid option.\n" + biller_options_text())
+            return
+
+        state["collecting"] = True
+        state["batch_count"] = 0
+        state["collecting_started_at"] = msg_ts
+        state["collecting_sender"] = sender
+        state["collecting_biller_id"] = active_biller_id
+        state["awaiting_biller_choice"] = False
+
+        save_processed(set())
+        save_orders([])
+        if os.path.exists(OUTPUT_PATH):
+            os.remove(OUTPUT_PATH)
+        save_state(state)
+
+        send_message(sender, f"Biller selected: {active_biller_id}\nNow paste order details.\nSend 'stop' when done.")
+        return
+
+    # --- BILLER command ---
+    biller_m = re.match(r"^biller\s+(.+)$", stripped_text, re.I)
+    if biller_m:
+        if not state.get("collecting"):
+            send_message(sender, "Not currently collecting. Send 'start' first.")
+            return
+        collecting_sender = state.get("collecting_sender")
+        if collecting_sender and sender != collecting_sender:
+            send_message(sender, "This batch belongs to another number.")
+            return
+        new_biller_id = resolve_biller_choice(biller_m.group(1).strip())
+        if not new_biller_id:
+            send_message(sender, "Invalid biller option.\n" + biller_options_text())
+            return
+        state["collecting_biller_id"] = new_biller_id
+        save_state(state)
+        send_message(sender, f"Biller ID updated for this batch: {new_biller_id}")
         return
 
     # --- STOP command ---
@@ -671,6 +776,8 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
         count = state.get("batch_count", 0)
         state["collecting"] = False
         state["batch_count"] = 0
+        state["collecting_biller_id"] = ""
+        state["awaiting_biller_choice"] = False
         save_state(state)
 
         if count == 0:
@@ -755,7 +862,14 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
             if owner and sender != owner:
                 send_message(sender, "A batch is currently active for another number.")
             else:
-                send_message(sender, f"Collecting orders: {count} label(s) so far.\nSend 'stop' to export PDF.")
+                biller_id = state.get("collecting_biller_id", "") or BILLER_OPTIONS["3"]
+                send_message(sender, f"Collecting orders: {count} label(s) so far.\nCurrent biller ID: {biller_id}\nSend 'stop' to export PDF.")
+        elif state.get("awaiting_biller_choice"):
+            owner = state.get("collecting_sender", "")
+            if owner and sender != owner:
+                send_message(sender, "A batch setup is in progress for another number.")
+            else:
+                send_message(sender, "Waiting for biller selection.\n" + biller_options_text())
         else:
             send_message(sender, "Not collecting. Send 'start' to begin.")
         return
@@ -786,6 +900,8 @@ def handle_message(sender, text, msg_ts=None, msg_id=None):
     for block in order_blocks:
         try:
             data = parse_order(block)
+            # Use chosen biller for the entire active batch.
+            data["biller_id"] = state.get("collecting_biller_id") or BILLER_OPTIONS["3"]
             h = order_hash(data)
             if h in processed:
                 continue
